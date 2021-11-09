@@ -4,11 +4,11 @@ class Shrine
   module Plugins
     # Documentation can be found on https://shrinerb.com/docs/plugins/derivatives
     module Derivatives
-      LOG_SUBSCRIBER = -> (event) do
+      LOG_SUBSCRIBER = lambda do |event|
         Shrine.logger.info "Derivatives (#{event.duration}ms) – #{{
-          processor:         event[:processor],
+          processor: event[:processor],
           processor_options: event[:processor_options],
-          uploader:          event[:uploader],
+          uploader: event[:uploader]
         }.inspect}"
       end
 
@@ -23,7 +23,9 @@ class Shrine
         uploader.opts[:derivatives].merge!(opts)
 
         # instrumentation plugin integration
-        uploader.subscribe(:derivatives, &log_subscriber) if uploader.respond_to?(:subscribe)
+        if uploader.respond_to?(:subscribe)
+          uploader.subscribe(:derivatives, &log_subscriber)
+        end
       end
 
       module AttachmentMethods
@@ -68,7 +70,9 @@ class Shrine
             shrine_class.derivatives_options[:processor_settings][name.to_sym] = { download: download }
           else
             shrine_class.derivatives_options[:processors].fetch(name.to_sym) do
-              fail Error, "derivatives processor #{name.inspect} not registered" unless name == :default
+              unless name == :default
+                raise Error, "derivatives processor #{name.inspect} not registered"
+              end
             end
           end
         end
@@ -175,7 +179,9 @@ class Shrine
             end
           end
 
-          set_derivatives(stored_derivatives) unless derivatives == stored_derivatives
+          unless derivatives == stored_derivatives
+            set_derivatives(stored_derivatives)
+          end
         end
 
         # In addition to deleting the main file it also deletes any derivatives.
@@ -418,7 +424,7 @@ class Shrine
 
           if derivatives.any?
             result ||= {}
-            result["derivatives"] = map_derivative(derivatives, transform_keys: :to_s) do |_, derivative|
+            result['derivatives'] = map_derivative(derivatives, transform_keys: :to_s) do |_, derivative|
               derivative.data
             end
           end
@@ -446,7 +452,7 @@ class Shrine
           data ||= {}
           data   = data.dup
 
-          derivatives_data = data.delete("derivatives") || data.delete(:derivatives) || {}
+          derivatives_data = data.delete('derivatives') || data.delete(:derivatives) || {}
           @derivatives     = shrine_class.derivatives(derivatives_data)
 
           data = nil if data.empty?
@@ -471,7 +477,7 @@ class Shrine
         #     attacher.derivatives #=> { thumb: #<Shrine::UploadedFile ...> }
         def derivatives=(derivatives)
           unless derivatives.is_a?(Hash)
-            fail ArgumentError, "expected derivatives to be a Hash, got #{derivatives.inspect}"
+            raise ArgumentError, "expected derivatives to be a Hash, got #{derivatives.inspect}"
           end
 
           @derivatives = derivatives
@@ -482,6 +488,30 @@ class Shrine
         #     attacher.map_derivative(derivatives) { |path, file| ... }
         def map_derivative(derivatives, **options, &block)
           shrine_class.map_derivative(derivatives, **options, &block)
+        end
+
+        # Support for proper marshalling
+        #
+        # It's impossible to marshal any models with this plugin
+        # as we can't marshal `Mutex` reliably.
+        def marshal_dump
+          instance_variables.reject do |name|
+            name == :@derivatives_mutex
+          end.map do |name|
+            [name, instance_variable_get(name)]
+          end
+        end
+
+        # Load marshalled instance
+        #
+        # We reload all instance variables, and re-create
+        # mutex. Otherwise the object won't function properly
+        def marshal_load(instance_variables)
+          instance_variables.each do |name, value|
+            instance_variable_set(name, value)
+          end
+
+          @derivatives_mutex = Mutex.new
         end
 
         private
@@ -497,7 +527,7 @@ class Shrine
           end
 
           unless result.is_a?(Hash)
-            fail Error, "expected derivatives processor #{processor_name.inspect} to return a Hash, got #{result.inspect}"
+            raise Error, "expected derivatives processor #{processor_name.inspect} to return a Hash, got #{result.inspect}"
           end
 
           result
@@ -508,11 +538,11 @@ class Shrine
           return yield unless shrine_class.respond_to?(:instrument)
 
           shrine_class.instrument(:derivatives, {
-            processor:         processor_name,
-            processor_options: processor_options,
-            io:                source,
-            attacher:          self,
-          }, &block)
+                                    processor: processor_name,
+                                    processor_options: processor_options,
+                                    io: source,
+                                    attacher: self
+                                  }, &block)
         end
 
         # Returns symbolized array or single key.
@@ -564,10 +594,10 @@ class Shrine
             map_derivative(
               object,
               transform_keys: :to_sym,
-              leaf: -> (value) { value.is_a?(Hash) && (value["id"] || value[:id]).is_a?(String) },
+              leaf: ->(value) { value.is_a?(Hash) && (value['id'] || value[:id]).is_a?(String) }
             ) { |_, value| uploaded_file(value) }
           else
-            fail ArgumentError, "cannot convert #{object.inspect} to derivatives"
+            raise ArgumentError, "cannot convert #{object.inspect} to derivatives"
           end
         end
 
@@ -576,7 +606,7 @@ class Shrine
         def map_derivative(object, path = [], transform_keys: :to_sym, leaf: nil, &block)
           return enum_for(__method__, object) unless block_given?
 
-          if leaf && leaf.call(object)
+          if leaf&.call(object)
             yield path, object
           elsif object.is_a?(Hash)
             object.inject({}) do |hash, (key, value)|
@@ -610,7 +640,7 @@ class Shrine
       module FileMethods
         def [](*keys)
           if keys.any? { |key| key.is_a?(Symbol) }
-            fail Error, "Shrine::UploadedFile#[] doesn't accept symbol metadata names. Did you happen to call `record.attachment[:derivative_name]` when you meant to call `record.attachment(:derivative_name)`?"
+            raise Error, "Shrine::UploadedFile#[] doesn't accept symbol metadata names. Did you happen to call `record.attachment[:derivative_name]` when you meant to call `record.attachment(:derivative_name)`?"
           else
             super
           end
@@ -621,13 +651,13 @@ class Shrine
       module VersionsCompatibility
         def load_data(data)
           return super if data.nil?
-          return super if data["derivatives"] || data[:derivatives]
-          return super if (data["id"] || data[:id]).is_a?(String)
+          return super if data['derivatives'] || data[:derivatives]
+          return super if (data['id'] || data[:id]).is_a?(String)
 
           data     = data.dup
-          original = data.delete("original") || data.delete(:original) || {}
+          original = data.delete('original') || data.delete(:original) || {}
 
-          super original.merge("derivatives" => data)
+          super original.merge('derivatives' => data)
         end
       end
     end
